@@ -1,11 +1,21 @@
 package com.logrit.spaceshipspotter;
 
+import java.io.IOException;
+import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.logging.Logger;
+
+import static us.monoid.web.Resty.*;
+import us.monoid.json.JSONException;
+import us.monoid.json.JSONObject;
+import us.monoid.web.JSONResource;
+import us.monoid.web.Resty;
+import us.monoid.web.TextResource;
 
 import android.support.v7.app.ActionBarActivity;
 import android.support.v7.app.ActionBar;
@@ -50,6 +60,7 @@ public class MainActivity extends ActionBarActivity implements
 	HashMap<String, Reading> readings;
 	ArrayList<SyncPoint> syncPoints;
 	private Timer timer;
+	public static final String BASE_URL = "http://spaceshipspotter.logrit.com/api";
 
 	boolean recording = false;
 
@@ -118,7 +129,9 @@ public class MainActivity extends ActionBarActivity implements
 	public void onSensorChanged(SensorEvent arg0) {
 		// log("Received sensor change: " + arg0.toString());
 		synchronized (readings) {
-			readings.put(arg0.sensor.getName(), new Reading(arg0));
+			Reading r = new Reading(arg0);
+			//Log.i("spaceshipfinder", r.toString());
+			readings.put(arg0.sensor.getName(), r);
 		}
 
 	}
@@ -158,6 +171,59 @@ public class MainActivity extends ActionBarActivity implements
 
 	public void syncServer(View view) {
 		log("Synchronizing with server");
+		
+		log("Stopping to recording to sync");
+		this.stopRecording(view);
+		
+		Thread t = new Thread() {
+			public void run() {
+				Resty r = new Resty();
+				synchronized (syncPoints) {
+					for(SyncPoint sync : syncPoints) {
+						try {
+							// POST /reports
+							// Create the JSON object
+							JSONObject json;
+							json = new JSONObject();
+							json.put("lat", sync.lat);
+							json.put("lon", sync.lon);
+							json.put("timestamp", (new Timestamp(sync.timestamp)).toString());
+							Integer report_id = (Integer)r.json(BASE_URL+"/reports/", content(json)).get("id");
+							// POST /readings
+							for(Reading reading : sync.r) {
+								json = new JSONObject();
+								json.put("sensor", reading.sensor);
+								json.put("type", reading.type);
+								json.put("accuracy", reading.accuracy);
+								json.put("timestamp", (new Timestamp(reading.timestamp)).toString());
+								json.put("report", report_id);
+								
+								Integer reading_id = (Integer)r.json(BASE_URL+"/readings/", content(json)).get("id");
+
+								// POST /values
+								for(float value : reading.values) {
+									json = new JSONObject();
+									json.put("reading", reading_id);
+									json.put("value", value);
+									r.json(BASE_URL+"/values/", content(json));
+								}
+							}
+						} catch (Exception e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+					}
+				}
+			}
+		};
+		
+		t.start();
+		try {
+			t.join();
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	}
 
 	class Reading {
@@ -171,8 +237,29 @@ public class MainActivity extends ActionBarActivity implements
 			this.sensor = event.sensor.getName();
 			this.type = event.sensor.getType();
 			this.accuracy = event.accuracy;
-			this.timestamp = event.timestamp;
+			//! This is time, in ns, since uptime
+			// Convert timestamp to ms
+			//this.timestamp = (long) (event.timestamp);
+			Date date = new Date();
+			this.timestamp = date.getTime();
 			this.values = event.values;
+		}
+		
+		public String toString() {
+			StringBuffer sb = new StringBuffer();
+			sb.append("Reading from: ");
+			sb.append(this.sensor);
+			sb.append("; type: "+type);
+			sb.append("; accuracy: "+accuracy);
+			sb.append("; timestamp: "+(new Timestamp(timestamp)).toString());
+			sb.append("; values: (");
+			
+			for(float v : values) {
+				sb.append(" " + v + " ");
+			}
+			sb.append(")");
+			
+			return sb.toString();
 		}
 	}
 
@@ -180,21 +267,22 @@ public class MainActivity extends ActionBarActivity implements
 		ArrayList<Reading> r;
 		long timestamp;
 		double lat;
-		double log;
+		double lon;
 
 		SyncPoint() {
 			synchronized (readings) {
 				r = new ArrayList<Reading>(readings.values());
 				Location mCurrentLocation = mLocationClient.getLastLocation();
 				this.lat = mCurrentLocation.getLatitude();
-				this.log = mCurrentLocation.getLongitude();
+				this.lon = mCurrentLocation.getLongitude();
+				this.timestamp = mCurrentLocation.getTime();
 				
 				readings.clear();
 			}
 		}
 		
 		public String toString() {
-			return "SyncPoint: (" + lat + ", " + log + "), " + r.size() + " readings";
+			return "SyncPoint: (" + lat + ", " + lon + "), " + r.size() + " readings";
 		}
 	}
 	
